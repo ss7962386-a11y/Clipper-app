@@ -83,7 +83,23 @@ class MainActivity : Activity() {
                 YoutubeDL.getInstance().init(applicationContext)
                 FFmpeg.getInstance().init(applicationContext)
                 runOnUiThread {
-                    result.text = "Engine tayyar. Link aur moment daalo."
+                    result.text = "yt-dlp update ho raha hai... 1 minute ruko"
+                }
+                try {
+                    YoutubeDL.getInstance().updateYoutubeDL(
+                        applicationContext,
+                        YoutubeDL.UpdateChannel._NIGHTLY
+                    )
+                } catch (t: Throwable) {
+                    // update fail ho to purane engine se hi chalao
+                }
+                val ver = try {
+                    YoutubeDL.getInstance().versionName(applicationContext)
+                } catch (t: Throwable) {
+                    "?"
+                }
+                runOnUiThread {
+                    result.text = "Engine tayyar (yt-dlp $ver). Link aur moment daalo."
                     btn.isEnabled = true
                 }
             } catch (t: Throwable) {
