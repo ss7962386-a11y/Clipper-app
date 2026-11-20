@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import android.widget.*
+import com.yausername.ffmpeg.FFmpeg
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import java.io.File
@@ -71,9 +72,26 @@ class MainActivity : Activity() {
 
         val btn = Button(this)
         btn.text = "Make clips"
+        btn.isEnabled = false
 
         val result = TextView(this)
         result.textSize = 15f
+        result.text = "Engine tayyar ho raha hai..."
+
+        Thread {
+            try {
+                YoutubeDL.getInstance().init(applicationContext)
+                FFmpeg.getInstance().init(applicationContext)
+                runOnUiThread {
+                    result.text = "Engine tayyar. Link aur moment daalo."
+                    btn.isEnabled = true
+                }
+            } catch (t: Throwable) {
+                runOnUiThread {
+                    result.text = "Engine error: ${t.javaClass.simpleName}: ${t.message}"
+                }
+            }
+        }.start()
 
         btn.setOnClickListener {
             val url = link.text.toString().trim()
@@ -108,9 +126,9 @@ class MainActivity : Activity() {
                         else "Download hua, par gallery mein save nahi hua"
                         btn.isEnabled = true
                     }
-                } catch (e: Exception) {
+                } catch (t: Throwable) {
                     runOnUiThread {
-                        result.text = "Error: ${e.message}"
+                        result.text = "Error: ${t.message}"
                         btn.isEnabled = true
                     }
                 }
