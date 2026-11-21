@@ -2,6 +2,9 @@ package com.example.clipper
 
 import android.app.Activity
 import android.content.ContentValues
+import android.media.MediaCodec
+import android.media.MediaExtractor
+import android.media.MediaFormat
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
@@ -10,6 +13,7 @@ import com.yausername.ffmpeg.FFmpeg
 import com.yausername.youtubedl_android.YoutubeDL
 import com.yausername.youtubedl_android.YoutubeDLRequest
 import java.io.File
+import java.nio.ByteOrder
 
 class MainActivity : Activity() {
 
@@ -40,7 +44,7 @@ class MainActivity : Activity() {
         return true
     }
 
-    // Most replayed graph se sabse zyada dekhe gaye hisse dhoondo
+    // Tareeka 1: YouTube ka Most replayed graph
     private fun findPeaks(url: String, count: Int, sec: Int): List<Int> {
         val req = YoutubeDLRequest(url)
         req.addOption("--dump-single-json")
@@ -60,6 +64,121 @@ class MainActivity : Activity() {
         for (item in sorted) {
             val s = maxOf(0, (item.first - sec / 2.0).toInt())
             if (picks.none { p -> Math.abs(p - s) < 60 }) picks.add(s)
+            if (picks.size >= count) break
+        }
+        return picks.sorted()
+    }
+
+    // Tareeka 2 (step a): sirf awaaz download karo
+    private fun downloadAudio(url: String, onLine: (String) -> Unit): File? {
+        val dir = File(getExternalFilesDir(null), "audio")
+        dir.mkdirs()
+        dir.listFiles()?.forEach { it.delete() }
+        val req = YoutubeDLRequest(url)
+        req.addOption("-f", "wa[ext=m4a]/wa/ba")
+        req.addOption("--no-playlist")
+        req.addOption("-o", File(dir, "audio.%(ext)s").absolutePath)
+        YoutubeDL.getInstance().execute(req) { progress, _, line ->
+            onLine("Awaaz download: $progress%\n$line")
+        }
+        return dir.listFiles()?.firstOrNull { it.name.startsWith("audio.") }
+    }
+
+    // Tareeka 2 (step b): awaaz ko second-by-second sunke tez jagah dhoondo
+    private fun findLoudMoments(file: File, count: Int, sec: Int): List<Int> {
+        val extractor = MediaExtractor()
+        extractor.setDataSource(file.absolutePath)
+        var track = -1
+        var format: MediaFormat? = null
+        for (i in 0 until extractor.trackCount) {
+            val f = extractor.getTrackFormat(i)
+            val m = f.getString(MediaFormat.KEY_MIME) ?: ""
+            if (m.startsWith("audio/")) {
+                track = i
+                format = f
+                break
+            }
+        }
+        val fm: MediaFormat = format ?: run {
+            extractor.release()
+            return emptyList()
+        }
+        extractor.selectTrack(track)
+        val codec = MediaCodec.createDecoderByType(fm.getString(MediaFormat.KEY_MIME)!!)
+        codec.configure(fm, null, null, 0)
+        codec.start()
+
+        var rate = fm.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+        var ch = fm.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+        val perSec = ArrayList<Double>()
+        var sumSq = 0.0
+        var n = 0L
+        val info = MediaCodec.BufferInfo()
+        var inDone = false
+        var outDone = false
+
+        while (!outDone) {
+            if (!inDone) {
+                val inIdx = codec.dequeueInputBuffer(10000)
+                if (inIdx >= 0) {
+                    val inBuf = codec.getInputBuffer(inIdx)!!
+                    val size = extractor.readSampleData(inBuf, 0)
+                    if (size < 0) {
+                        codec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                        inDone = true
+                    } else {
+                        codec.queueInputBuffer(inIdx, 0, size, extractor.sampleTime, 0)
+                        extractor.advance()
+                    }
+                }
+            }
+            val o = codec.dequeueOutputBuffer(info, 10000)
+            if (o >= 0) {
+                val buf = codec.getOutputBuffer(o)
+                if (buf != null && info.size > 0) {
+                    buf.position(info.offset)
+                    buf.limit(info.offset + info.size)
+                    val sb = buf.order(ByteOrder.nativeOrder()).asShortBuffer()
+                    while (sb.hasRemaining()) {
+                        val v = sb.get() / 32768.0
+                        sumSq += v * v
+                        n++
+                        if (n >= rate.toLong() * ch) {
+                            perSec.add(Math.sqrt(sumSq / n))
+                            sumSq = 0.0
+                            n = 0
+                        }
+                    }
+                }
+                codec.releaseOutputBuffer(o, false)
+                if ((info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) outDone = true
+            } else if (o == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                val nf = codec.outputFormat
+                rate = nf.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                ch = nf.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+            }
+        }
+        codec.stop()
+        codec.release()
+        extractor.release()
+
+        val len = perSec.size
+        if (len < 30) return emptyList()
+        val pre = DoubleArray(len + 1)
+        for (i in 0 until len) pre[i + 1] = pre[i] + perSec[i]
+        val w = 10
+        val scores = ArrayList<Pair<Int, Double>>()
+        for (i in 0..(len - w)) {
+            val avg = (pre[i + w] - pre[i]) / w
+            val from = maxOf(0, i - 60)
+            val prev = if (i - from > 0) (pre[i] - pre[from]) / (i - from) else avg
+            scores.add(Pair(i, avg * (avg / (prev + 0.01))))
+        }
+        val sorted = scores.sortedByDescending { it.second }
+        val picks = ArrayList<Int>()
+        for (p in sorted) {
+            val s = maxOf(0, p.first - 3)
+            if (picks.none { Math.abs(it - s) < 90 }) picks.add(s)
             if (picks.size >= count) break
         }
         return picks.sorted()
@@ -117,7 +236,7 @@ class MainActivity : Activity() {
         moment.hint = "Moment(s): 1:47:42 ya 3:00, 10:00"
 
         val auto = CheckBox(this)
-        auto.text = "Auto: viral moments dhoondo (Most replayed, top 3)"
+        auto.text = "Auto: viral moments dhoondo (top 3)"
 
         val lenLabel = TextView(this)
         lenLabel.text = "Clip length"
@@ -201,14 +320,36 @@ class MainActivity : Activity() {
 
             Thread {
                 try {
-                    val starts: List<Int>
+                    var starts: List<Int> = emptyList()
                     if (isAuto) {
-                        runOnUiThread { result.text = "Viral moments dhoondh raha hoon..." }
-                        starts = findPeaks(url, 3, sec)
+                        runOnUiThread { result.text = "Pehle Most replayed graph dhoondh raha hoon..." }
+                        starts = try {
+                            findPeaks(url, 3, sec)
+                        } catch (t: Throwable) {
+                            emptyList()
+                        }
                         if (starts.isEmpty()) {
                             runOnUiThread {
-                                result.text = "Is video mein Most replayed graph nahi mila " +
-                                    "(live stream ya kam views). Moment khud daalo."
+                                result.text = "Graph nahi mila. Ab awaaz se dhoondhta hoon " +
+                                    "(audio download ~40 MB, 2 se 5 minute)..."
+                            }
+                            val file = downloadAudio(url) { text ->
+                                runOnUiThread { result.text = text }
+                            }
+                            if (file == null) {
+                                runOnUiThread {
+                                    result.text = "Awaaz download nahi hui. Moment khud daalo."
+                                    btn.isEnabled = true
+                                }
+                                return@Thread
+                            }
+                            runOnUiThread { result.text = "Awaaz analyse ho rahi hai... ruko" }
+                            starts = findLoudMoments(file, 3, sec)
+                            file.delete()
+                        }
+                        if (starts.isEmpty()) {
+                            runOnUiThread {
+                                result.text = "Koi tez moment nahi mila. Moment khud daalo."
                                 btn.isEnabled = true
                             }
                             return@Thread
