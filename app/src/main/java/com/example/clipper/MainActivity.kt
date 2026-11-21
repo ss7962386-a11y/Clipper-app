@@ -40,6 +40,65 @@ class MainActivity : Activity() {
         return true
     }
 
+    // Most replayed graph se sabse zyada dekhe gaye hisse dhoondo
+    private fun findPeaks(url: String, count: Int, sec: Int): List<Int> {
+        val req = YoutubeDLRequest(url)
+        req.addOption("--dump-single-json")
+        req.addOption("--skip-download")
+        req.addOption("--no-playlist")
+        val json = YoutubeDL.getInstance().execute(req).out
+        val obj = org.json.JSONObject(json)
+        val arr = obj.optJSONArray("heatmap") ?: return emptyList()
+        val items = ArrayList<Pair<Double, Double>>()
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            val mid = (o.getDouble("start_time") + o.getDouble("end_time")) / 2
+            items.add(Pair(mid, o.getDouble("value")))
+        }
+        val sorted = items.sortedByDescending { item -> item.second }
+        val picks = ArrayList<Int>()
+        for (item in sorted) {
+            val s = maxOf(0, (item.first - sec / 2.0).toInt())
+            if (picks.none { p -> Math.abs(p - s) < 60 }) picks.add(s)
+            if (picks.size >= count) break
+        }
+        return picks.sorted()
+    }
+
+    private fun makeClip(
+        url: String, start: Int, sec: Int, makeVertical: Boolean,
+        label: String, onLine: (String) -> Unit
+    ): Boolean {
+        val dir = File(getExternalFilesDir(null), "clips")
+        dir.mkdirs()
+        val name = "clip_${System.currentTimeMillis()}"
+        val req = YoutubeDLRequest(url)
+        req.addOption("--download-sections", "*${fmt(start)}-${fmt(start + sec)}")
+        req.addOption("-f", "bv*[height<=720]+ba/b[height<=720]/b")
+        if (makeVertical) {
+            val filter = "split=2[a][b];" +
+                "[a]crop=w=ih*1080/1170:h=ih,scale=1080:1170[t];" +
+                "[b]crop=w=iw/4:h=iw/4/1.44:x=iw*3/4:y=ih-iw/4/1.44,scale=1080:750[c];" +
+                "[t][c]vstack,setsar=1"
+            req.addOption("--merge-output-format", "mkv")
+            req.addOption("--recode-video", "mp4")
+            req.addOption(
+                "--postprocessor-args",
+                "VideoConvertor:-vf $filter -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p"
+            )
+        } else {
+            req.addOption("--merge-output-format", "mp4")
+        }
+        req.addOption("-o", File(dir, "$name.%(ext)s").absolutePath)
+        YoutubeDL.getInstance().execute(req) { progress, _, line ->
+            onLine("$label Progress: $progress%\n$line")
+        }
+        val out = dir.listFiles()?.firstOrNull {
+            it.name.startsWith(name) && it.extension == "mp4"
+        }
+        return out != null && saveToGallery(out)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -55,7 +114,10 @@ class MainActivity : Activity() {
         link.hint = "YouTube ya Twitch link paste karo"
 
         val moment = EditText(this)
-        moment.hint = "Moment, jaise 1:47:42"
+        moment.hint = "Moment(s): 1:47:42 ya 3:00, 10:00"
+
+        val auto = CheckBox(this)
+        auto.text = "Auto: viral moments dhoondo (Most replayed, top 3)"
 
         val lenLabel = TextView(this)
         lenLabel.text = "Clip length"
@@ -103,7 +165,7 @@ class MainActivity : Activity() {
                     "?"
                 }
                 runOnUiThread {
-                    result.text = "Engine tayyar (yt-dlp $ver). Link aur moment daalo."
+                    result.text = "Engine tayyar (yt-dlp $ver). Link daalo."
                     btn.isEnabled = true
                 }
             } catch (t: Throwable) {
@@ -115,49 +177,59 @@ class MainActivity : Activity() {
 
         btn.setOnClickListener {
             val url = link.text.toString().trim()
-            val start = parseTime(moment.text.toString())
             val sec = group.checkedRadioButtonId - 1000
             val makeVertical = vertical.isChecked
-            if (url.isEmpty() || start == null) {
-                result.text = "Link aur moment sahi daalo (jaise 1:47:42)"
+            val isAuto = auto.isChecked
+            val momentText = moment.text.toString()
+
+            if (url.isEmpty()) {
+                result.text = "Pehle link paste karo"
                 return@setOnClickListener
             }
+            var manual: List<Int> = emptyList()
+            if (!isAuto) {
+                val parsed = momentText.split(",").map { parseTime(it) }
+                if (parsed.isEmpty() || parsed.any { it == null }) {
+                    result.text = "Moment sahi daalo (jaise 1:47:42 ya 3:00, 10:00), ya Auto tick karo"
+                    return@setOnClickListener
+                }
+                manual = parsed.filterNotNull()
+            }
+
             btn.isEnabled = false
-            result.text = "Kaam shuru... 1 se 3 minute ruko"
+            result.text = "Kaam shuru... app khula rakho"
 
             Thread {
                 try {
-                    val dir = File(getExternalFilesDir(null), "clips")
-                    dir.mkdirs()
-                    val name = "clip_${System.currentTimeMillis()}"
-                    val req = YoutubeDLRequest(url)
-                    req.addOption("--download-sections", "*${fmt(start)}-${fmt(start + sec)}")
-                    req.addOption("-f", "bv*[height<=720]+ba/b[height<=720]/b")
-                    if (makeVertical) {
-                        val filter = "split=2[a][b];" +
-                            "[a]crop=w=ih*1080/1170:h=ih,scale=1080:1170[t];" +
-                            "[b]crop=w=iw/4:h=iw/4/1.44:x=iw*3/4:y=ih-iw/4/1.44,scale=1080:750[c];" +
-                            "[t][c]vstack,setsar=1"
-                        req.addOption("--merge-output-format", "mkv")
-                        req.addOption("--recode-video", "mp4")
-                        req.addOption(
-                            "--postprocessor-args",
-                            "VideoConvertor:-vf $filter -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p"
-                        )
+                    val starts: List<Int>
+                    if (isAuto) {
+                        runOnUiThread { result.text = "Viral moments dhoondh raha hoon..." }
+                        starts = findPeaks(url, 3, sec)
+                        if (starts.isEmpty()) {
+                            runOnUiThread {
+                                result.text = "Is video mein Most replayed graph nahi mila " +
+                                    "(live stream ya kam views). Moment khud daalo."
+                                btn.isEnabled = true
+                            }
+                            return@Thread
+                        }
+                        runOnUiThread {
+                            result.text = "Mile: " + starts.joinToString { fmt(it) }
+                        }
                     } else {
-                        req.addOption("--merge-output-format", "mp4")
+                        starts = manual
                     }
-                    req.addOption("-o", File(dir, "$name.%(ext)s").absolutePath)
-                    YoutubeDL.getInstance().execute(req) { progress, _, line ->
-                        runOnUiThread { result.text = "Progress: $progress%\n$line" }
+
+                    var saved = 0
+                    for ((i, st) in starts.withIndex()) {
+                        val label = "Clip ${i + 1} of ${starts.size} (${fmt(st)})"
+                        val ok = makeClip(url, st, sec, makeVertical, label) { text ->
+                            runOnUiThread { result.text = text }
+                        }
+                        if (ok) saved++
                     }
-                    val out = dir.listFiles()?.firstOrNull {
-                        it.name.startsWith(name) && it.extension == "mp4"
-                    }
-                    val saved = out != null && saveToGallery(out)
                     runOnUiThread {
-                        result.text = if (saved) "Ho gaya! Gallery mein dekho: Movies/Clipper"
-                        else "Download hua, par gallery mein save nahi hua"
+                        result.text = "Ho gaya! $saved clips Gallery mein: Movies/Clipper"
                         btn.isEnabled = true
                     }
                 } catch (t: Throwable) {
@@ -172,6 +244,7 @@ class MainActivity : Activity() {
         root.addView(title)
         root.addView(link)
         root.addView(moment)
+        root.addView(auto)
         root.addView(lenLabel)
         root.addView(group)
         root.addView(vertical)
