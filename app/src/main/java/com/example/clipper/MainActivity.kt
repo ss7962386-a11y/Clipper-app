@@ -70,6 +70,10 @@ class MainActivity : Activity() {
         }
         group.check(1015)
 
+        val vertical = CheckBox(this)
+        vertical.text = "Vertical 9:16 (game upar, facecam neeche)"
+        vertical.isChecked = true
+
         val btn = Button(this)
         btn.text = "Make clips"
         btn.isEnabled = false
@@ -113,12 +117,13 @@ class MainActivity : Activity() {
             val url = link.text.toString().trim()
             val start = parseTime(moment.text.toString())
             val sec = group.checkedRadioButtonId - 1000
+            val makeVertical = vertical.isChecked
             if (url.isEmpty() || start == null) {
                 result.text = "Link aur moment sahi daalo (jaise 1:47:42)"
                 return@setOnClickListener
             }
             btn.isEnabled = false
-            result.text = "Kaam shuru... 1 se 2 minute ruko"
+            result.text = "Kaam shuru... 1 se 3 minute ruko"
 
             Thread {
                 try {
@@ -128,7 +133,20 @@ class MainActivity : Activity() {
                     val req = YoutubeDLRequest(url)
                     req.addOption("--download-sections", "*${fmt(start)}-${fmt(start + sec)}")
                     req.addOption("-f", "bv*[height<=720]+ba/b[height<=720]/b")
-                    req.addOption("--merge-output-format", "mp4")
+                    if (makeVertical) {
+                        val filter = "split=2[a][b];" +
+                            "[a]crop=w=ih*1080/1170:h=ih,scale=1080:1170[t];" +
+                            "[b]crop=w=iw/4:h=iw/4/1.44:x=iw*3/4:y=ih-iw/4/1.44,scale=1080:750[c];" +
+                            "[t][c]vstack,setsar=1"
+                        req.addOption("--merge-output-format", "mkv")
+                        req.addOption("--recode-video", "mp4")
+                        req.addOption(
+                            "--postprocessor-args",
+                            "VideoConvertor:-vf $filter -c:v libx264 -preset veryfast -crf 23 -pix_fmt yuv420p"
+                        )
+                    } else {
+                        req.addOption("--merge-output-format", "mp4")
+                    }
                     req.addOption("-o", File(dir, "$name.%(ext)s").absolutePath)
                     YoutubeDL.getInstance().execute(req) { progress, _, line ->
                         runOnUiThread { result.text = "Progress: $progress%\n$line" }
@@ -156,6 +174,7 @@ class MainActivity : Activity() {
         root.addView(moment)
         root.addView(lenLabel)
         root.addView(group)
+        root.addView(vertical)
         root.addView(btn)
         root.addView(result)
 
